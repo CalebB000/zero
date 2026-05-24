@@ -1,3 +1,349 @@
+if getgenv().O48load then
+    if getgenv().O48_Cleanup then getgenv().O48_Cleanup() end
+end
+
+local O48_Connections = {}
+local O48_Drawings    = {}
+local O48_GUI         = nil
+
+local function O48_Cleanup()
+    for _, conn in ipairs(O48_Connections) do pcall(function() conn:Disconnect() end) end
+    for _, draw in ipairs(O48_Drawings)    do pcall(function() draw:Remove()     end) end
+    if O48_GUI then pcall(function() O48_GUI:Destroy() end) end
+    O48_Connections = {}
+    O48_Drawings    = {}
+    O48_GUI         = nil
+    if getgenv().O48_OldNamecall then
+        local mt = getrawmetatable(game)
+        setreadonly(mt, false)
+        mt.__namecall = getgenv().O48_OldNamecall
+        setreadonly(mt, true)
+        getgenv().O48_OldNamecall = nil
+    end
+    if getgenv().O48_OldRandom then
+        hookfunction(math.random, getgenv().O48_OldRandom)
+        getgenv().O48_OldRandom = nil
+    end
+    if getgenv().O48_GunHandlerOriginal and getgenv().O48_GunHandler then
+        getgenv().O48_GunHandler.shoot   = getgenv().O48_GunHandlerOriginal
+        getgenv().O48_GunHandler         = nil
+        getgenv().O48_GunHandlerOriginal = nil
+    end
+    getgenv().O48load     = nil
+    getgenv().O48_Cleanup = nil
+end
+
+getgenv().O48_Cleanup = O48_Cleanup
+getgenv().O48load     = true
+
+getgenv().O48 = {
+    ["General"] = {
+        ["Enabled"]       = true,
+        ["Notifications"] = false,
+        ["FOVMode"]       = "Mouse",
+    },
+    ["Silent"] = {
+        ["Enabled"] = true,
+        ["Main"] = {
+            ["Enabled"]   = true,
+            ["Hitchance"] = 100,
+            ["Parts"]     = {"Head","UpperTorso","HumanoidRootPart"},
+            ["ClosestPoint"] = {
+                ["Enabled"] = true,
+                ["Mode"]    = "Advanced",
+                ["Scale"]   = 5.5,
+                ["Density"] = 2,
+            },
+            ["Prediction"] = {
+                ["Enabled"] = true,
+                ["Mode"]    = "Basic",
+                ["Basic"]   = 0,
+                ["Distance"] = {
+                    ["Enabled"] = false,
+                    ["Ranges"]  = {
+                        {["Max"]=20,  ["Basic"]=0.10},
+                        {["Max"]=50,  ["Basic"]=0.13},
+                        {["Max"]=100, ["Basic"]=0.15},
+                        {["Max"]=200, ["Basic"]=0.18},
+                    },
+                },
+            },
+            ["AntiCurve"] = {
+                ["Enabled"]         = true,
+                ["Mode"]            = "3D",
+                ["AngularCurve"]    = 1.6,
+                ["DebugOutput"]     = false,
+                ["DynamicDistance"] = {
+                    ["Enabled"]     = true,
+                    ["MaxDistance"] = 1,
+                    ["MinRadius"]   = 1,
+                    ["MaxRadius"]   = 1,
+                },
+            },
+            ["AutoLock"] = {
+                ["Enabled"] = true,
+                ["Mode"]    = "FOV",
+            },
+        },
+        ["ClientBullet"] = {["Enabled"] = true},
+        ["FOV"] = {
+            ["Type"]         = "Box",
+            ["Enabled"]      = true,
+            ["ShowFOV"]      = false,
+            ["Radius"]       = 90,
+            ["Color"]        = Color3.fromRGB(255,68,80),
+            ["FocusColor"]   = Color3.fromRGB(255,255,255),
+            ["Filled"]       = false,
+            ["Transparency"] = 1,
+            ["Thickness"]    = 1,
+            ["Box"] = {
+                ["Width"]  = 10,
+                ["Height"] = 10,
+            },
+            ["WeaponConfiguration"] = {
+                ["Enabled"]            = false,
+                ["[Revolver]"]         = {["Radius"]=80},
+                ["[Double-Barrel SG]"] = {["Radius"]=120},
+                ["[TacticalShotgun]"]  = {["Radius"]=110},
+                ["[AUG]"]              = {["Radius"]=90},
+                ["[Rifle]"]            = {["Radius"]=85},
+                ["[Shotgun]"]          = {["Radius"]=115},
+                ["[Glock]"]            = {["Radius"]=85},
+                ["[Silencer]"]         = {["Radius"]=88},
+            },
+            ["DistanceConfiguration"] = {
+                ["Enabled"] = true,
+                ["Ranges"]  = {
+                    {["Max"]=20,  ["Radius"]=350},
+                    {["Max"]=50,  ["Radius"]=320},
+                    {["Max"]=100, ["Radius"]=300},
+                    {["Max"]=200, ["Radius"]=280},
+                },
+            },
+        },
+        ["AntiAimViewer"] = true,
+        ["WallCheck"]     = true,
+        ["WeaponCheck"]   = true,
+    },
+    ["Camlock"] = {
+        ["Enabled"] = true,
+        ["Main"] = {
+            ["Enabled"]         = true,
+            ["Key"]             = "C",
+            ["UnlockKey"]       = "Z",
+            ["SmoothLock"]      = true,
+            ["Smoothness"]      = 0.00216245,
+            ["MouseSmoothness"] = 0,
+            ["Shake"]           = true,
+            ["ShakeValue"]      = 1,
+            ["Parts"]           = {"Head","UpperTorso","HumanoidRootPart"},
+            ["FollowMode"] = {
+                ["Enabled"] = true,
+                ["Mode"]    = "Camera",
+            },
+            ["EasingStyle"] = "Linear",
+            ["ClosestPoint"] = {
+                ["Enabled"] = true,
+                ["Mode"]    = "Basic",
+                ["Scale"]   = 5.5,
+                ["Density"] = 2,
+            },
+            ["Prediction"] = {
+                ["Enabled"] = true,
+                ["Mode"]    = "Basic",
+                ["Basic"]   = 0.135,
+                ["Distance"] = {
+                    ["Enabled"] = false,
+                    ["Ranges"]  = {
+                        {["Max"]=20,  ["Basic"]=0},
+                        {["Max"]=50,  ["Basic"]=0},
+                        {["Max"]=100, ["Basic"]=0},
+                        {["Max"]=200, ["Basic"]=0},
+                    },
+                },
+            },
+            ["Smoothness_Distance"] = {
+                ["Enabled"] = false,
+                ["Ranges"]  = {
+                    {["Max"]=20,  ["Smoothness"]=0.3},
+                    {["Max"]=50,  ["Smoothness"]=0.2},
+                    {["Max"]=100, ["Smoothness"]=0.15},
+                    {["Max"]=200, ["Smoothness"]=0.1},
+                },
+            },
+            ["CameraMode"] = {
+                ["Enabled"]     = true,
+                ["EasingStyle"] = "Linear",
+                ["Smoothness"]  = 0.01,
+                ["Prediction"]  = {
+                    ["Enabled"] = false,
+                    ["Basic"]   = 0,
+                    ["Distance"] = {
+                        ["Enabled"] = false,
+                        ["Ranges"]  = {
+                            {["Max"]=20,  ["Basic"]=0},
+                            {["Max"]=50,  ["Basic"]=0},
+                            {["Max"]=100, ["Basic"]=0},
+                            {["Max"]=200, ["Basic"]=0},
+                        },
+                    },
+                },
+                ["Smoothness_Distance"] = {
+                    ["Enabled"] = false,
+                    ["Ranges"]  = {
+                        {["Max"]=20,  ["Smoothness"]=0.3},
+                        {["Max"]=50,  ["Smoothness"]=0.2},
+                        {["Max"]=100, ["Smoothness"]=0.15},
+                        {["Max"]=200, ["Smoothness"]=0.1},
+                    },
+                },
+            },
+            ["MouseMode"] = {
+                ["Enabled"]    = false,
+                ["Smoothness"] = 1,
+                ["Prediction"] = {
+                    ["Enabled"] = true,
+                    ["Basic"]   = 0.12,
+                    ["Distance"] = {
+                        ["Enabled"] = false,
+                        ["Ranges"]  = {
+                            {["Max"]=20,  ["Basic"]=0},
+                            {["Max"]=50,  ["Basic"]=0},
+                            {["Max"]=100, ["Basic"]=0},
+                            {["Max"]=200, ["Basic"]=0},
+                        },
+                    },
+                },
+                ["Smoothness_Distance"] = {
+                    ["Enabled"] = false,
+                    ["Ranges"]  = {
+                        {["Max"]=20,  ["Smoothness"]=0.3},
+                        {["Max"]=50,  ["Smoothness"]=0.2},
+                        {["Max"]=100, ["Smoothness"]=0.15},
+                        {["Max"]=200, ["Smoothness"]=0.1},
+                    },
+                },
+            },
+        },
+        ["FOV"] = {
+            ["Type"]         = "Circle",
+            ["Enabled"]      = true,
+            ["UseFOV"]       = true,
+            ["ShowFOV"]      = false,
+            ["Radius"]       = 90,
+            ["Color"]        = Color3.fromRGB(255,68,80),
+            ["FocusColor"]   = Color3.fromRGB(255,255,255),
+            ["Filled"]       = false,
+            ["Transparency"] = 1,
+            ["Thickness"]    = 1,
+            ["Box"] = {
+                ["Width"]  = 10,
+                ["Height"] = 10,
+            },
+            ["WeaponConfiguration"] = {
+                ["Enabled"]            = false,
+                ["[Revolver]"]         = {["Radius"]=80},
+                ["[Double-Barrel SG]"] = {["Radius"]=270},
+                ["[TacticalShotgun]"]  = {["Radius"]=220},
+                ["[AUG]"]              = {["Radius"]=90},
+                ["[Rifle]"]            = {["Radius"]=85},
+                ["[Shotgun]"]          = {["Radius"]=230},
+                ["[Glock]"]            = {["Radius"]=85},
+                ["[Silencer]"]         = {["Radius"]=88},
+            },
+            ["DistanceConfiguration"] = {
+                ["Enabled"] = true,
+                ["Ranges"]  = {
+                    {["Max"]=20,        ["Radius"]=1000},
+                    {["Max"]=50,        ["Radius"]=1000},
+                    {["Max"]=100,       ["Radius"]=1000},
+                    {["Max"]=math.huge, ["Radius"]=1000},
+                },
+            },
+        },
+        ["WallCheck"] = false,
+        ["WeaponCheck"] = true,
+        ["FirstPersonCheck"] = true,
+    },
+    ["Tracer"] = {
+        ["Enabled"]      = false,
+        ["Color"]        = Color3.fromRGB(255,68,80),
+        ["Transparency"] = 1,
+    },
+    ["Key360"] = {
+        ["Enabled"]       = false,
+        ["RotationSpeed"] = 2500,
+        ["Keybind"]       = Enum.KeyCode.V,
+    },
+    ["Checks"] = {
+        ["Enabled"]             = true,
+        ["AntiGroundShots"]     = false,
+        ["AntiGroundThreshold"] = 3.5,
+        ["Visibility"]          = false,
+        ["Knocked"]             = true,
+        ["CrewCheck"]           = false,
+        ["ForceField"]          = true,
+        ["Grabbed"]             = true,
+    },
+    ["Prefire"] = {
+        ["Enabled"]        = false,
+        ["Keybind"]        = {
+            ["Enabled"] = true,
+            ["Key"]     = "T",
+        },
+        ["DetectionRange"] = 1000,
+        
+        ["RandomDelay"]    = {
+            ["Enabled"] = true,
+            ["Min"]     = 0.17,   
+            ["Max"]     = 0.20,  
+        },
+        
+        ["DelayPresets"] = {
+            ["Enabled"]       = false,
+            ["Preset1"] = {
+                ["Enabled"] = true,
+                ["Keybind"] = Enum.KeyCode.Y,
+                ["Delay"]   = 0.20,
+            },
+            ["Preset2"] = {
+                ["Enabled"] = true,
+                ["Keybind"] = Enum.KeyCode.U,
+                ["Delay"]   = 0.0,
+            },
+            ["CurrentPreset"] = 0,
+        },
+        ["Delay"]          = 0.0,
+        ["ShotCount"]      = 1,
+        ["TargetSpecific"] = {
+            ["Enabled"]       = true,
+            ["Player"]        = nil,
+            ["Notifications"] = true,
+            ["StayLocked"]    = true,
+            ["StayLockedKey"] = Enum.KeyCode.L,
+        },
+        ["ActivationKeybind"] = {["Input"] = {"MouseButton2"}},
+    },
+    ["SpreadMod"] = {
+        ["Enabled"] = true,
+        ["BulletSpread"] = {
+            ["Enabled"] = true,
+            ["Amount"]  = 55,
+        },
+    },
+    ["Unload"] = {
+        ["Enabled"] = true,
+        ["Keybind"] = Enum.KeyCode.Delete
+    },
+    ["Games"] = {
+        [2788229376]      = {["Name"]="Da Hood",  ["RemotePath"]={"ReplicatedStorage","MainEvent"}},
+        [110569823638263] = {["Name"]="Zee Hood", ["RemotePath"]={"ReplicatedStorage","MainRemotes","MainRemoteEvent"}},
+        [105837354210824] = {["Name"]="Yuu Hood", ["RemotePath"]={"ReplicatedStorage","MainRemotes","MainRemoteEvent"}},
+        [79900851769492]  = {["Name"]="Der Hood", ["RemotePath"]={"ReplicatedStorage","MainEvent"}},
+        [140379876286064] = {["Name"]="Unknown Hood", ["RemotePath"]={"ReplicatedStorage","MainEvent"}}, -- PLACEHOLDER: Run find_mainevent.lua to get the real path
+    },
+}
+ 
 if getgenv().BYPASSED_ADONIS ~= true then
     local ok = pcall(function()
         local ScriptContext = game:service("ScriptContext")
