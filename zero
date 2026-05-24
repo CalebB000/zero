@@ -1,0 +1,1372 @@
+if getgenv().BYPASSED_ADONIS ~= true then
+    local ok = pcall(function()
+        local ScriptContext = game:service("ScriptContext")
+        local LP            = game:service("Players").LocalPlayer
+        -- REMOVED: ScriptContext:SetTimeout(1) -- This can crash if any script takes >1 second
+        local Kick; Kick = hookfunction(LP.Kick, function(...)
+            if checkcaller() or tostring(getcallingscript()) ~= "ClientMover" then return Kick(...) end
+        end)
+        local DI; DI = hookfunction(debug.info, function(...)
+            if checkcaller() or tostring(getcallingscript()) ~= "ClientMover" or select(2,...) ~= "slanf" then return DI(...) end
+            return coroutine.yield()
+        end)
+        for _, v in getgc(true) do
+            if type(v) ~= "table" then continue end
+            local Kill     = rawget(v, "Kill")
+            local Detected = rawget(v, "Detected")
+            if type(Kill)     == "function" and debug.info(Kill,"s")     == ".Client.Client"     then hookfunction(Kill,     function() end) end
+            if type(Detected) == "function" and debug.info(Detected,"s") == ".Client.Core.Anti"  then hookfunction(Detected, function() end) end
+        end
+        setfflag("DebugRunParallelLuaOnMainThread","true")
+    end)
+    if ok then getgenv().BYPASSED_ADONIS = true end
+    task.wait(0.5)
+end
+
+local uis  = game:GetService("UserInputService")
+local rs   = game:GetService("RunService")
+local plrs = game:GetService("Players")
+local ws   = game:GetService("Workspace")
+ 
+local CToggle = false
+local lplr    = plrs.LocalPlayer
+local CTarget = nil
+local m       = lplr:GetMouse()
+local c       = ws.CurrentCamera
+ 
+local function cfg()         return getgenv().O48 end
+local function cfg_general() return getgenv().O48["General"] end
+local function cfg_silent()  return getgenv().O48["Silent"]["Main"] end
+local function cfg_sfov()    return getgenv().O48["Silent"]["FOV"] end
+local function cfg_cam()     return getgenv().O48["Camlock"]["Main"] end
+local function cfg_cfov()    return getgenv().O48["Camlock"]["FOV"] end
+local function cfg_trace()   return getgenv().O48["Tracer"] end
+local function cfg_checks()  return getgenv().O48["Checks"] end
+local function cfg_prefire() return getgenv().O48["Prefire"] end
+local function cfg_spread()  return getgenv().O48["SpreadMod"]["BulletSpread"] end
+local function cfg_key360()  return getgenv().O48["Key360"] end
+local function cfg_unload()  return getgenv().O48["Unload"] end
+ 
+local function GetMouseVP()
+    local loc = uis:GetMouseLocation()
+    return Vector2.new(loc.X, loc.Y)
+end
+ 
+local vect3 = Vector3.new
+local vect2 = Vector2.new
+local cnew  = CFrame.new
+ 
+local prefire_armed  = false
+local prefire_firing = false
+ 
+local CachedAimPart     = nil
+local CachedAimPosition = nil
+local CachedTracerPos   = nil
+local CachedHasWeapon   = false  -- Cache weapon state to avoid recursive calls in namecall
+ 
+local GameData = getgenv().O48["Games"][game.PlaceId]
+local GameName = GameData and GameData["Name"] or "Unknown"
+local IsDaHood = game.PlaceId == 2788229376 or game.PlaceId == 79900851769492  -- Da Hood or Der Hood
+ 
+local function ResolveRemote(path)
+    local current = game
+    for _, name in ipairs(path) do
+        local child = current:WaitForChild(name, 10)
+        if not child then return nil end
+        current = child
+    end
+    return current
+end
+ 
+local MainEvent = GameData and ResolveRemote(GameData["RemotePath"]) or nil
+
+-- Debug: Show MainEvent status
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("O48 DEBUG INFO:")
+print("Game: " .. GameName)
+print("PlaceID: " .. game.PlaceId)
+print("MainEvent Status: " .. (MainEvent and "✓ FOUND" or "✗ NIL - WILL CRASH WITHOUT FIX!"))
+if MainEvent then
+    print("MainEvent Path: " .. MainEvent:GetFullName())
+else
+    print("⚠️  WARNING: MainEvent is nil!")
+    print("   Silent aim will work via raycast hook only")
+    print("   Run find_mainevent.lua to find the correct remote path")
+end
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+ 
+local NotificationHolder = loadstring(game:HttpGet("https://raw.githubusercontent.com/BocusLuke/UI/main/STX/Module.Lua"))()
+local Notification       = loadstring(game:HttpGet("https://raw.githubusercontent.com/BocusLuke/UI/main/STX/Client.Lua"))()
+ 
+local notif_queue   = {}
+local notif_running = false
+ 
+local function SendNotification(text)
+    table.insert(notif_queue, text)
+    if notif_running then return end
+    notif_running = true
+    task.spawn(function()
+        while #notif_queue > 0 do
+            local msg = table.remove(notif_queue, 1)
+            Notification:Notify(
+                {Title = "O48 | "..GameName, Description = msg},
+                {OutlineColor = Color3.fromRGB(50,76,110), Time = 2, Type = "image"},
+                {Image = "http://www.roblox.com/asset/?id=6023426923", ImageColor = Color3.fromRGB(50,76,110)}
+            )
+            task.wait(2.2)
+        end
+        notif_running = false
+    end)
+end
+
+local function SendRobloxNotification(title, text, duration)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = title,
+            Text = text,
+            Duration = duration or 3,
+        })
+    end)
+end
+ 
+if cfg_general()["Enabled"] and cfg_general()["Notifications"] then
+    SendNotification("Loading...")
+    task.wait(1)
+end
+ 
+local Toggle             = false
+local LastRenderTime     = 0
+local FullCircleRotation = 2 * math.pi
+local TotalRotation      = 0
+ 
+table.insert(O48_Connections, uis.InputBegan:Connect(function(input, gpe)
+    if cfg_key360()["Enabled"] and input.KeyCode == cfg_key360()["Keybind"] and not gpe then
+        Toggle = not Toggle
+    end
+end))
+ 
+local RayParams = RaycastParams.new()
+RayParams.FilterType  = Enum.RaycastFilterType.Exclude
+RayParams.IgnoreWater = true
+ 
+local R15_PARTS = {
+    "Head","UpperTorso","LowerTorso",
+    "LeftUpperArm","LeftLowerArm","LeftHand",
+    "RightUpperArm","RightLowerArm","RightHand",
+    "LeftUpperLeg","LeftLowerLeg",
+    "RightUpperLeg","RightLowerLeg",
+}
+ 
+local EasingFunctions = {
+    Linear  = function(t) return t end,
+    Quad    = function(t) return t*t end,
+    Cubic   = function(t) return t*t*t end,
+    Quart   = function(t) return t*t*t*t end,
+    Sine    = function(t) return 1 - math.cos(t*math.pi*0.5) end,
+    Expo    = function(t) return t == 0 and 0 or 2^(10*(t-1)) end,
+    Circ    = function(t) return 1 - math.sqrt(1-t*t) end,
+    Back    = function(t) local s=1.70158; return t*t*((s+1)*t-s) end,
+    Elastic = function(t)
+        if t == 0 or t == 1 then return t end
+        return -(2^(10*(t-1)))*math.sin((t-1.1)*5*math.pi)
+    end,
+}
+ 
+local function ApplyEasing(style, t)
+    return (EasingFunctions[style] or EasingFunctions.Linear)(math.clamp(t,0,1))
+end
+ 
+local function EasedLerp(a, b, alpha, style)
+    return a:Lerp(b, ApplyEasing(style or "Linear", alpha))
+end
+ 
+local function GetCurrentTool()
+    local char = lplr.Character
+    return char and char:FindFirstChildOfClass("Tool")
+end
+ 
+local function HasWeapon()
+    return GetCurrentTool() ~= nil
+end
+ 
+local function GetFOVRadius(fov_cfg, distance)
+    local dc = fov_cfg["DistanceConfiguration"]
+    if dc and dc["Enabled"] and distance then
+        local ranges = dc["Ranges"]
+        if distance > 0 then
+            for i = 1, #ranges do
+                if distance <= ranges[i]["Max"] then return ranges[i]["Radius"] end
+            end
+        end
+        -- If distance is 0 or no match found, use first range
+        return ranges[1]["Radius"]
+    end
+    local wc = fov_cfg["WeaponConfiguration"]
+    if wc and wc["Enabled"] then
+        local tool = GetCurrentTool()
+        if tool then
+            local gun = wc[tool.Name]
+            if gun then return gun["Radius"] end
+        end
+    end
+    return fov_cfg["Radius"]
+end
+ 
+local function GetDistancePrediction(pred_cfg, distance)
+    local dc = pred_cfg["Distance"]
+    if not dc or not dc["Enabled"] then return nil end
+    local ranges = dc["Ranges"]
+    if not ranges then return nil end
+    for i = 1, #ranges do
+        if distance <= ranges[i]["Max"] then return ranges[i]["Basic"] end
+    end
+    return ranges[#ranges]["Basic"]
+end
+ 
+local function GetDistanceSmoothness(sm_cfg, distance)
+    if not sm_cfg or not sm_cfg["Enabled"] then return nil end
+    local ranges = sm_cfg["Ranges"]
+    if not ranges then return nil end
+    for i = 1, #ranges do
+        if distance <= ranges[i]["Max"] then return ranges[i]["Smoothness"] end
+    end
+    return ranges[#ranges]["Smoothness"]
+end
+ 
+local function BasicPoint(part)
+    if not part then return nil end
+    local mr  = m.UnitRay
+    local mp  = mr.Origin + (mr.Direction * (part.Position - mr.Origin).Magnitude)
+    local pt  = (mp.Y >= (part.Position - part.Size/2).Y and mp.Y <= (part.Position + part.Size/2).Y)
+        and (part.Position + vect3(0, -part.Position.Y + mp.Y, 0)) or part.Position
+    local chk = RaycastParams.new()
+    chk.FilterType = Enum.RaycastFilterType.Include
+    chk.FilterDescendantsInstances = {part}
+    local ray = ws:Raycast(mp, pt - mp, chk)
+    if m.Target == part then return m.Hit.Position end
+    if ray then return ray.Position end
+    return m.Hit.Position
+end
+ 
+local function GetClosestPointInternal(character, cp_cfg, ref_x, ref_y)
+    if not (character and character.Parent) then return nil end
+    local mode    = cp_cfg["Mode"] or "Advanced"
+    local scale   = cp_cfg["Scale"] or 5.5
+    local density = math.clamp(cp_cfg["Density"] or 2, 1, 4)
+    local sf      = math.clamp(scale, 0, 10) / 10
+    local bd      = 1e9
+    local bp, bpos
+    local parts = {}
+    for i = 1, #R15_PARTS do
+        local part = character:FindFirstChild(R15_PARTS[i])
+        if part and part:IsA("BasePart") then
+            parts[#parts+1] = part
+        end
+    end
+    if mode == "Basic" then
+        for i = 1, #parts do
+            local cl = BasicPoint(parts[i])
+            if cl then
+                local s = c:WorldToViewportPoint(cl)
+                if s.Z > 0 then
+                    local d = (s.X-ref_x)^2 + (s.Y-ref_y)^2
+                    if d < bd then bd=d; bp=parts[i]; bpos=cl end
+                end
+            end
+        end
+    else
+        local so = {}
+        for j = 0, density-1 do so[j+1] = j / math.max(density-1, 1) end
+        for i = 1, #parts do
+            local part = parts[i]
+            local size = part.Size
+            local half = size * 0.5
+            local cf   = part.CFrame
+            local sh   = half * (1 - sf)
+            for z = 1, density do
+                local lz = math.clamp(-half.Z + so[z]*size.Z, -sh.Z, sh.Z)
+                for y = 1, density do
+                    local ly = math.clamp(-half.Y + so[y]*size.Y, -sh.Y, sh.Y)
+                    for x = 1, density do
+                        local lx = math.clamp(-half.X + so[x]*size.X, -sh.X, sh.X)
+                        local wp = cf:PointToWorldSpace(vect3(lx,ly,lz))
+                        local s  = c:WorldToViewportPoint(wp)
+                        if s.Z > 0 then
+                            local d = (s.X-ref_x)^2 + (s.Y-ref_y)^2
+                            if d < bd then bd=d; bp=part; bpos=wp end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if bp then return {Part=bp, Position=bpos} end
+    local root = character:FindFirstChild("HumanoidRootPart")
+    return root and {Part=root, Position=root.Position}
+end
+ 
+local function GetClosestPoint(character, cp_cfg)
+    local mv = GetMouseVP()
+    return GetClosestPointInternal(character, cp_cfg, mv.X, mv.Y)
+end
+ 
+local function GetPartFromList(character, parts_list)
+    if not character or not parts_list then return nil end
+    for i = 1, #parts_list do
+        local part = character:FindFirstChild(parts_list[i])
+        if part and part:IsA("BasePart") then return part end
+    end
+    return character:FindFirstChild("HumanoidRootPart")
+end
+ 
+local function GetVelocity(character)
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    return hrp and hrp.AssemblyLinearVelocity or vect3(0,0,0)
+end
+ 
+local function ApplyPrediction(position, velocity, pred_cfg, distance)
+    if not position or not velocity or not pred_cfg then return position end
+    if not pred_cfg["Enabled"] then return position end
+    local scalar = pred_cfg["Basic"] or 0
+    if pred_cfg["Distance"] and pred_cfg["Distance"]["Enabled"] then
+        local dp = GetDistancePrediction(pred_cfg, distance or 0)
+        if dp then scalar = dp end
+    end
+    return position + velocity * scalar
+end
+ 
+local function CheckAntiCurve(target_pos, ac_cfg)
+    if not ac_cfg or not ac_cfg["Enabled"] then return false, 0 end
+    local mag = (target_pos - m.Hit.Position).Magnitude / 10
+    local ac  = ac_cfg["AngularCurve"] or 9.6
+    local dd  = ac_cfg["DynamicDistance"]
+    if dd and dd["Enabled"] then
+        local hrp  = lplr.Character and lplr.Character:FindFirstChild("HumanoidRootPart")
+        local dist = hrp and (hrp.Position - target_pos).Magnitude or 0
+        local t    = math.clamp(dist / (dd["MaxDistance"] or 100), 0, 1)
+        ac = (dd["MinRadius"] or 50) + ((dd["MaxRadius"] or 150) - (dd["MinRadius"] or 50)) * t
+    end
+    if ac_cfg["Mode"] == "2D" then
+        local sp = c:WorldToViewportPoint(target_pos)
+        local mv = GetMouseVP()
+        local sd = (vect2(sp.X,sp.Y) - mv).Magnitude / 10
+        if ac_cfg["DebugOutput"] then print(string.format("[AntiCurve 2D] %.2f | %.2f | %s", sd, ac, tostring(sd>ac))) end
+        return sd > ac, sd
+    end
+    if ac_cfg["DebugOutput"] then print(string.format("[AntiCurve 3D] %.2f | %.2f | %s", mag, ac, tostring(mag>ac))) end
+    return mag > ac, mag
+end
+ 
+local function GetTargetDistance(target)
+    if not target or not target.Character then return 0 end
+    local hrp  = target.Character:FindFirstChild("HumanoidRootPart")
+    local lhrp = lplr.Character and lplr.Character:FindFirstChild("HumanoidRootPart")
+    if hrp and lhrp then return (hrp.Position - lhrp.Position).Magnitude end
+    return 0
+end
+ 
+local function DoWallCheck(target_part)
+    if not getgenv().O48["Silent"]["WallCheck"] and not getgenv().O48["Camlock"]["WallCheck"] then
+        return true
+    end
+    if not target_part or not target_part:IsA("BasePart") then return false end
+    
+    -- Filter out ALL player characters so wallcheck ignores players completely
+    local chars_to_filter = {lplr.Character, c}
+    for _, player in ipairs(plrs:GetPlayers()) do
+        if player.Character then
+            table.insert(chars_to_filter, player.Character)
+        end
+    end
+    
+    RayParams.FilterDescendantsInstances = chars_to_filter
+    local origin = c.CFrame.Position
+    local dir    = target_part.Position - origin
+    local result = ws:Raycast(origin, dir, RayParams)
+    
+    -- If raycast hits ANYTHING (non-player object = wall), wallcheck fails
+    -- If raycast hits NOTHING (clear line of sight through/around players), wallcheck passes
+    if result then
+        -- Hit something - check if it's a player part (shouldn't happen due to filter, but double-check)
+        local hit_model = result.Instance:FindFirstAncestorOfClass("Model")
+        if hit_model and plrs:GetPlayerFromCharacter(hit_model) then
+            -- Hit a player somehow - treat as no wall
+            return true
+        end
+        -- Hit a non-player object (wall/building)
+        return false
+    end
+    
+    -- Nothing blocking - clear line of sight
+    return true
+end
+ 
+local function PassesChecks(player)
+    if not player or not player.Character then return false end
+    local char = player.Character
+    local hum  = char:FindFirstChildOfClass("Humanoid")
+    local be   = char:FindFirstChild("BodyEffects")
+    local chk  = cfg_checks()
+    if not chk["Enabled"] then return true end
+    if not hum or hum.Health <= 0 then return false end
+    if hum:GetState() == Enum.HumanoidStateType.Dead then return false end
+    if chk["Knocked"] and be then
+        local ko   = be:FindFirstChild("K.O")
+        local dead = be:FindFirstChild("Dead")
+        if ko   and ko.Value   == true then return false end
+        if dead and dead.Value == true then return false end
+    end
+    if chk["Grabbed"] and be then
+        local g = be:FindFirstChild("Grabbed")
+        if g and g.Value == true then return false end
+    end
+    if chk["ForceField"] and char:FindFirstChildOfClass("ForceField") then return false end
+    if chk["CrewCheck"] and player.Team and lplr.Team and player.Team == lplr.Team then return false end
+    if chk["AntiGroundShots"] then
+        local thrp = char:FindFirstChild("HumanoidRootPart")
+        local lhrp = lplr.Character and lplr.Character:FindFirstChild("HumanoidRootPart")
+        if thrp and lhrp then
+            local tv = thrp.Velocity
+            if hum.FloorMaterial ~= Enum.Material.Air
+                and (lhrp.Position.Y - thrp.Position.Y) > (chk["AntiGroundThreshold"] or 3.5)
+                and math.abs(tv.Y) < 5
+            then return false end
+            if tv.Magnitude > 100 then return false end
+        end
+    end
+    return true
+end
+ 
+local function IsAlive(player)
+    if not player or not player.Character then return false end
+    local hum = player.Character:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if hum:GetState() == Enum.HumanoidStateType.Dead then return false end
+    local be = player.Character:FindFirstChild("BodyEffects")
+    if be then
+        if be:FindFirstChild("K.O") and be["K.O"].Value == true then return false end
+        if be:FindFirstChild("Dead") and be.Dead.Value == true then return false end
+    end
+    return true
+end
+ 
+local function GetCameraMode()
+    local focus = c.Focus
+    if not focus then return "Third Person" end
+    local camPos = c.CFrame.Position
+    local focusPos = focus.Position
+    local dist = (camPos - focusPos).Magnitude
+    if dist < 1.5 then  -- More lenient threshold for shift-lock/scoping
+        return "First Person"
+    else
+        return "Third Person"
+    end
+end
+ 
+local function GetBoxFOVBounds(fov_cfg, hrp)
+    local screen, on = c:WorldToViewportPoint(hrp.Position)
+    if not on then return nil end
+    local scale = (hrp.Size.Y * c.ViewportSize.Y) / (screen.Z * 2) * 80 / c.FieldOfView
+    local w     = fov_cfg["Box"]["Width"]  * scale
+    local h     = fov_cfg["Box"]["Height"] * scale
+    return {
+        X = screen.X - w/2,
+        Y = screen.Y - h/2,
+        W = w,
+        H = h,
+        CX = screen.X,
+        CY = screen.Y,
+    }
+end
+ 
+local function IsMouseInBoxFOV(bounds)
+    if not bounds then return false end
+    local mv = GetMouseVP()
+    return mv.X >= bounds.X and mv.X <= bounds.X + bounds.W
+       and mv.Y >= bounds.Y and mv.Y <= bounds.Y + bounds.H
+end
+ 
+local function IsMouseInCircleFOV(fov_cfg, hrp, distance)
+    local radius = GetFOVRadius(fov_cfg, distance)
+    local pos    = c:WorldToViewportPoint(hrp.Position)
+    return (GetMouseVP() - vect2(pos.X, pos.Y)).Magnitude < radius
+end
+local function GetClosestPlayerToMouse()
+    local mv = GetMouseVP()
+    local closest = nil
+    local bestDist = math.huge
+ 
+    for _, player in ipairs(plrs:GetPlayers()) do
+        if player == lplr then continue end
+        if not IsAlive(player) or not PassesChecks(player) then continue end
+        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then continue end
+        local screen, on = c:WorldToViewportPoint(hrp.Position)
+        if not on then continue end
+        local dist = (vect2(screen.X, screen.Y) - mv).Magnitude
+        if dist < bestDist then
+            bestDist = dist
+            closest = player
+        end
+    end
+    return closest
+end
+local function InSilentFOV(target, distance)
+    local sfov = cfg_sfov()
+    if not sfov["Enabled"] then return true end
+    local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    if sfov["Type"] == "Box" then
+        local bounds = GetBoxFOVBounds(sfov, hrp)
+        return IsMouseInBoxFOV(bounds)
+    end
+    return IsMouseInCircleFOV(sfov, hrp, distance)
+end
+ 
+local function InCamlockFOV(target, distance)
+    local cfov = cfg_cfov()
+    if not cfov["Enabled"] or not cfov["UseFOV"] then return true end
+    local hrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    if cfov["Type"] == "Box" then
+        local bounds = GetBoxFOVBounds(cfov, hrp)
+        return IsMouseInBoxFOV(bounds)
+    end
+    return IsMouseInCircleFOV(cfov, hrp, distance)
+end
+ 
+local function GetClosestPlayerSpheircal(fov_cfg, distance)
+    local mv      = GetMouseVP()
+    local bd      = math.huge
+    local best    = nil
+    local is_box  = fov_cfg["Type"] == "Box"
+    local radius  = not is_box and GetFOVRadius(fov_cfg, distance) or math.huge
+ 
+    for _, player in ipairs(plrs:GetPlayers()) do
+        if player == lplr then continue end
+        if not IsAlive(player) or not PassesChecks(player) then continue end
+        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then continue end
+        local screen, on = c:WorldToViewportPoint(hrp.Position)
+        if not on then continue end
+        local mag = (vect2(screen.X, screen.Y) - mv).Magnitude
+        if is_box then
+            local bounds = GetBoxFOVBounds(fov_cfg, hrp)
+            if bounds and IsMouseInBoxFOV(bounds) and mag < bd then
+                bd = mag; best = player
+            end
+        else
+            if mag < radius and mag < bd then
+                bd = mag; best = player
+            end
+        end
+    end
+    return best
+end
+ 
+local function GetSilentAimPosition(character, distance)
+    if not character then return nil, nil end
+    local s        = cfg_silent()
+    local pred_cfg = s["Prediction"]
+    local vel      = GetVelocity(character)
+    local cp_cfg   = s["ClosestPoint"]
+    local bp, bpos
+    if cp_cfg["Enabled"] then
+        local r = GetClosestPoint(character, cp_cfg)
+        if r then bp=r.Part; bpos=r.Position end
+    else
+        bp = GetPartFromList(character, s["Parts"])
+        if bp then bpos = bp.Position end
+    end
+    if not (bp and bpos) then return nil, nil end
+    if getgenv().O48["Silent"]["WallCheck"] and not DoWallCheck(bp) then return nil, nil end
+    return bp, ApplyPrediction(bpos, vel, pred_cfg, distance)
+end
+ 
+local function GetCamlockPosition(character, distance)
+    if not character then return nil, nil end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil, nil end
+    local cam    = cfg_cam()
+    local cp_cfg = cam["ClosestPoint"]
+    local vel    = GetVelocity(character)
+    local bp, bpos
+    if cp_cfg["Enabled"] then
+        local mv = GetMouseVP()
+        local r  = GetClosestPointInternal(character, cp_cfg, mv.X, mv.Y)
+        if r then bp=r.Part; bpos=r.Part.Position end
+    else
+        bp = GetPartFromList(character, cam["Parts"])
+        if bp then bpos = bp.Position end
+    end
+    if not bp then return hrp, ApplyPrediction(hrp.Position, vel, cam["Prediction"], distance) end
+    -- If wallcheck enabled and fails, stop camlock movement (return nil)
+    if getgenv().O48["Camlock"]["WallCheck"] and not DoWallCheck(bp) then 
+        return nil, nil
+    end
+    return bp, ApplyPrediction(bpos, vel, cam["Prediction"], distance)
+end
+ 
+local function GetTracerPosition(character, distance)
+    if not character then return nil end
+    local s      = cfg_silent()
+    local vel    = GetVelocity(character)
+    local cp_cfg = s["ClosestPoint"]
+    if cp_cfg["Enabled"] then
+        local r = GetClosestPoint(character, cp_cfg)
+        if not r then
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            return hrp and hrp.Position
+        end
+        return ApplyPrediction(r.Position, vel, s["Prediction"], distance)
+    end
+    local part = GetPartFromList(character, s["Parts"])
+    return part and ApplyPrediction(part.Position, vel, s["Prediction"], distance)
+end
+ 
+local SilentTarget = nil
+
+local function GetSilentTarget()
+    local autolock = cfg_silent()["AutoLock"]
+    
+    if not autolock or not autolock["Enabled"] then
+        return CToggle and CTarget or nil
+    end
+    
+    local mode = autolock["Mode"] or "FOV"
+    
+    if mode == "Always" then
+        return GetClosestPlayerToMouse()
+    elseif mode == "FOV" then
+        local dist = SilentTarget and GetTargetDistance(SilentTarget) or 0
+        return GetClosestPlayerSpheircal(cfg_sfov(), dist)
+    end
+    
+    return nil
+end
+
+local function UpdateCachedAim()
+    CachedAimPart     = nil
+    CachedAimPosition = nil
+    CachedTracerPos   = nil
+    
+    if not getgenv().O48["Silent"]["Enabled"] then return end
+    if not cfg_silent()["Enabled"] then return end
+    
+    SilentTarget = GetSilentTarget()
+    
+    if not SilentTarget or not SilentTarget.Character then return end
+    if not IsAlive(SilentTarget) then return end
+    
+    local dist = GetTargetDistance(SilentTarget)
+    
+    local autolock = cfg_silent()["AutoLock"]
+    if autolock and autolock["Enabled"] and autolock["Mode"] == "FOV" then
+        if not InSilentFOV(SilentTarget, dist) then return end
+    end
+    
+    local part, pos = GetSilentAimPosition(SilentTarget.Character, dist)
+    
+    if part and pos and typeof(pos) == "Vector3" and typeof(part) == "Instance" then
+        CachedAimPart = part
+        CachedAimPosition = pos
+        
+        local tp = GetTracerPosition(SilentTarget.Character, dist)
+        if tp then CachedTracerPos = tp end
+    end
+end
+ 
+local function FindTarget()
+    local sfov = cfg_sfov()
+    local dist = CTarget and GetTargetDistance(CTarget) or 0
+    return GetClosestPlayerSpheircal(sfov, dist)
+end
+ 
+local function GetClosestPlayerInFOV()
+    local sfov = cfg_sfov()
+    local dist = CTarget and GetTargetDistance(CTarget) or 0
+    local p    = GetClosestPlayerSpheircal(sfov, dist)
+    if p and p.Character then
+        return p.Character:FindFirstChild("HumanoidRootPart")
+    end
+    return nil
+end
+ 
+local gun_handler        = nil
+local gun_handler_active = false
+ 
+do
+    local ok, gh = pcall(function()
+        return require(game:GetService("ReplicatedStorage"):WaitForChild("Modules",5):WaitForChild("GunHandler",5))
+    end)
+    if ok and gh and gh.shoot then
+        gun_handler        = gh
+        gun_handler_active = true
+    end
+end
+ 
+if gun_handler_active then
+    local cb_cfg = getgenv().O48["Silent"]["ClientBullet"]
+    if cb_cfg and cb_cfg["Enabled"] then
+        local orig_shoot = gun_handler.shoot
+ 
+        local function GetCrosshairWorldPos()
+            local s   = c.ViewportSize
+            local ray = c:ViewportPointToRay(s.X/2, s.Y/2, 0)
+            return ray.Origin + ray.Direction * 1000
+        end
+ 
+        gun_handler.shoot = function(args)
+            local sc = getgenv().O48["Silent"]
+            if not cb_cfg["Enabled"] or not sc["Enabled"] or not sc["Main"]["Enabled"] then
+                return orig_shoot(args)
+            end
+            
+            local our_char = lplr.Character
+            local our_tool = our_char and our_char:FindFirstChildOfClass("Tool")
+            local is_our_shot = args.Handle and our_tool and args.Handle == our_tool:FindFirstChild(args.Handle.Name)
+            
+            if not is_our_shot then
+                return orig_shoot(args)
+            end
+            
+            if not (SilentTarget and SilentTarget.Character) then
+                return orig_shoot(args)
+            end
+            
+            if not (CachedAimPosition and CachedAimPart) then
+                return orig_shoot(args)
+            end
+            
+            args.AimPosition = GetCrosshairWorldPos()
+            local results    = {orig_shoot(args)}
+            local muz        = args.ForcedOrigin
+                or (args.Handle and args.Handle:FindFirstChild("Muzzle") and args.Handle.Muzzle.WorldPosition)
+                or c.CFrame.Position
+            results[1] = CachedAimPosition
+            results[2] = CachedAimPart
+            results[3] = (muz - CachedAimPosition).Unit
+            return table.unpack(results)
+        end
+ 
+        getgenv().O48_GunHandler        = gun_handler
+        getgenv().O48_GunHandlerOriginal = orig_shoot
+    end
+ 
+    if gun_handler.getAim then
+        local orig_get_aim
+        orig_get_aim = hookfunction(gun_handler.getAim, function(p0, p1)
+            local sc = getgenv().O48["Silent"]
+            if not sc["Enabled"] or not sc["Main"]["Enabled"] then return orig_get_aim(p0,p1) end
+            if not CachedAimPosition then return orig_get_aim(p0,p1) end
+            local dir = CachedAimPosition - p0
+            return dir.Unit, dir.Magnitude
+        end)
+    end
+end
+ 
+do
+    local math_random_old
+    math_random_old = hookfunction(math.random, newcclosure(function(...)
+        if checkcaller() then return math_random_old(...) end
+        local spread = cfg_spread()
+        if spread and spread["Enabled"] then
+            local args   = {...}
+            local a1, a2 = args[1], args[2]
+            if (#args == 0) or (a1 == -0.05 and a2 == 0.05) or (a1 == -0.1) or (a1 == -0.05) then
+                return math_random_old(...) * (spread["Amount"] / 100)
+            end
+        end
+        return math_random_old(...)
+    end))
+    getgenv().O48_OldRandom = math_random_old
+end
+ 
+do
+    local function prefire_activate()
+        if prefire_firing then return end
+        local char = lplr.Character
+        if not char then return end
+        local tool = char:FindFirstChildOfClass("Tool")
+        if not tool then return end
+        prefire_firing = true
+        
+        local delay_time = cfg_prefire()["Delay"]
+        local shot_count = cfg_prefire()["ShotCount"] or 1
+        
+        local dp = cfg_prefire()["DelayPresets"]
+        local current_preset = dp["CurrentPreset"] or 0
+        
+        if current_preset == 1 and dp["Preset1"] and dp["Preset1"]["Enabled"] then
+            delay_time = dp["Preset1"]["Delay"] or 0
+        elseif current_preset == 2 and dp["Preset2"] and dp["Preset2"]["Enabled"] then
+            delay_time = dp["Preset2"]["Delay"] or 0
+        elseif current_preset == 0 then
+            local rd = cfg_prefire()["RandomDelay"]
+            if rd and rd["Enabled"] then
+                local min_delay = rd["Min"] or 0
+                local max_delay = rd["Max"] or 0
+                delay_time = min_delay + (math.random() * (max_delay - min_delay))
+            else
+                delay_time = cfg_prefire()["Delay"]
+            end
+        end
+        
+        if delay_time > 0 then
+            task.delay(delay_time, function()
+                for i = 1, shot_count do
+                    tool:Activate()
+                    if i < shot_count then
+                        task.wait(0.05)
+                    end
+                end
+                prefire_firing = false
+            end)
+        else
+            for i = 1, shot_count do
+                tool:Activate()
+                if i < shot_count then
+                    task.wait(0.05)
+                end
+            end
+            prefire_firing = false
+        end
+    end
+ 
+    local function update_prefire()
+        if not cfg_prefire() or not cfg_prefire()["Enabled"] then return end
+        if not prefire_armed then return end
+        
+        local ok, radius = pcall(function() return ws.Ignored.Siren.Radius end)
+        if not ok or not radius then return end
+        local lhrp = lplr.Character and lplr.Character:FindFirstChild("HumanoidRootPart")
+        if not lhrp then return end
+        
+        local detection_range = cfg_prefire()["DetectionRange"] or 1000
+        local target_specific = cfg_prefire()["TargetSpecific"]
+        
+        for _, obj in ipairs(radius:GetChildren()) do
+            if obj.Name ~= "BULLET_RAYS" then continue end
+            if not obj:IsA("BasePart") then continue end  -- Safety check: ensure obj has Position
+            
+            local owner = obj:GetAttribute("OwnerCharacter")
+            if owner == lplr.Name then continue end
+            
+            if target_specific and target_specific["Enabled"] then
+                if not target_specific["Player"] then continue end
+                if owner ~= target_specific["Player"] then continue end
+            end
+            
+            if (obj.Position - lhrp.Position).Magnitude > detection_range then continue end
+            
+            prefire_activate()
+            return
+        end
+    end
+ 
+    table.insert(O48_Connections, uis.InputBegan:Connect(function(k,t)
+        if t then return end
+        if not cfg_prefire() or not cfg_prefire()["Enabled"] then return end
+        if k.UserInputType == Enum.UserInputType.MouseButton2 then prefire_armed = true end
+    end))
+    table.insert(O48_Connections, uis.InputEnded:Connect(function(k)
+        if k.UserInputType == Enum.UserInputType.MouseButton2 then prefire_armed = false end
+    end))
+    table.insert(O48_Connections, rs.Heartbeat:Connect(update_prefire))
+end
+ 
+do
+    local mt  = getrawmetatable(game)
+    local old = mt.__namecall
+    setreadonly(mt, false)
+    getgenv().O48_OldNamecall = old
+ 
+    local function is_mouse_arg(v)
+        if typeof(v) == "Vector3" then return true end
+        if typeof(v) == "Ray"     then return true end
+        if typeof(v) == "CFrame" and math.abs(v.LookVector.Y) < 0.98 then return true end
+        return false
+    end
+ 
+    local function redirect_args(args, aim_pos)
+        for i = 1, #args do
+            local v = args[i]
+            if typeof(v) == "Vector3" then
+                args[i] = aim_pos
+            elseif typeof(v) == "CFrame" then
+                args[i] = cnew(aim_pos)
+            elseif typeof(v) == "table" then
+                for k, tv in pairs(v) do
+                    if typeof(tv) == "Vector3" then v[k] = aim_pos end
+                    if typeof(tv) == "CFrame"  then v[k] = cnew(aim_pos) end
+                end
+            end
+        end
+        return args
+    end
+ 
+    mt.__namecall = newcclosure(function(self, ...)
+        if checkcaller() then return old(self, ...) end
+        local args   = {...}
+        local method = getnamecallmethod()
+ 
+        -- CRITICAL NIL CHECK: Only process MainEvent if it exists (prevents crashes in unknown games)
+        if MainEvent and method == "FireServer" and self == MainEvent then
+            local s         = cfg_silent()
+            local fa        = args[1]
+            local ac        = s["AntiCurve"]
+            local hc        = s["Hitchance"] or 100
+            local silent_on = getgenv().O48["Silent"]["Enabled"]
+                and s["Enabled"]
+                and not gun_handler_active
+                and CachedAimPosition
+                and math.random(100) <= hc
+                and (not getgenv().O48["Silent"]["WeaponCheck"] or CachedHasWeapon)
+ 
+            -- Der Hood detection (obfuscated shooting string)
+            if fa == "D3RHooDMSOUEPoS233^+" then
+                if silent_on then
+                    local curved = CheckAntiCurve(CachedAimPosition, ac)
+                    if curved then return old(self, table.unpack(args)) end
+                    args[2] = CachedAimPosition
+                    return old(self, table.unpack(args))
+                end
+                return old(self, table.unpack(args))
+            end
+ 
+            if IsDaHood then
+                if fa == "UpdateMousePosI2" then
+                    if cfg()["Silent"]["AntiAimViewer"] then return old(self, ...) end
+                    if silent_on then
+                        local curved = CheckAntiCurve(CachedAimPosition, ac)
+                        if curved then return old(self, "UpdateMousePosI2", m.Hit.Position) end
+                        return old(self, "UpdateMousePosI2", CachedAimPosition)
+                    end
+                    return old(self, "UpdateMousePosI2", m.Hit.Position)
+                end
+                if fa == "UpdateMousePos" then return old(self, ...) end
+            else
+                local has_mouse = false
+                for i = 1, #args do
+                    if is_mouse_arg(args[i]) then has_mouse=true; break end
+                end
+                if has_mouse then
+                    if cfg()["Silent"]["AntiAimViewer"] then return old(self, ...) end
+                    if silent_on then
+                        local curved = CheckAntiCurve(CachedAimPosition, ac)
+                        if curved then
+                            args = redirect_args(args, m.Hit.Position)
+                            return old(self, table.unpack(args))
+                        end
+                        args = redirect_args(args, CachedAimPosition)
+                        return old(self, table.unpack(args))
+                    end
+                    args = redirect_args(args, m.Hit.Position)
+                    return old(self, table.unpack(args))
+                end
+            end
+        end
+ 
+        local sc = cfg_silent()
+        if not gun_handler_active
+            and getgenv().O48["Silent"]["Enabled"]
+            and sc["Enabled"]
+            and CachedAimPart
+            and CachedAimPosition
+            and math.random(100) <= (sc["Hitchance"] or 100)
+            and (not getgenv().O48["Silent"]["WeaponCheck"] or CachedHasWeapon)
+        then
+            local aim = CachedAimPosition
+            if self == ws then
+                local ml = method:lower()
+                if ml == "raycast" then
+                    args[2] = (aim - args[1]).Unit * 10000
+                    return old(self, table.unpack(args))
+                elseif ml == "shapecast" then
+                    args[2] = (aim - args[1].Position).Unit * 10000
+                    return old(self, table.unpack(args))
+                elseif ml == "spherecast" then
+                    args[3] = (aim - args[1]).Unit * 10000
+                    return old(self, table.unpack(args))
+                elseif ml == "blockcast" then
+                    args[3] = (aim - args[1].Position).Unit * 10000
+                    return old(self, table.unpack(args))
+                end
+            end
+        end
+ 
+        return old(self, ...)
+    end)
+ 
+    setreadonly(mt, true)
+end
+ 
+table.insert(O48_Connections, uis.InputBegan:Connect(function(k, t)
+    if t then return end
+    local cam = cfg_cam()
+    if not getgenv().O48["Camlock"]["Enabled"] or not cam["Enabled"] then return end
+    if k.KeyCode == Enum.KeyCode[cam["Key"]:upper()] then
+        CToggle = true
+        CTarget = GetClosestPlayerToMouse()
+        if CTarget and cfg_general()["Enabled"] and cfg_general()["Notifications"] then
+            SendNotification("locked: "..CTarget.Name)
+        end
+    elseif k.KeyCode == Enum.KeyCode[cam["UnlockKey"]:upper()] then
+        if CToggle then
+            CToggle=false
+            CTarget=nil; CachedAimPart=nil; CachedAimPosition=nil; CachedTracerPos=nil
+            if cfg_general()["Enabled"] and cfg_general()["Notifications"] then
+                SendNotification("unlocked")
+            end
+        end
+    end
+end))
+ 
+table.insert(O48_Connections, uis.InputBegan:Connect(function(k, t)
+    if t then return end
+    local ul = cfg_unload()
+    if not ul or not ul["Enabled"] then return end
+    if k.KeyCode == ul["Keybind"] then
+        if cfg_general()["Enabled"] and cfg_general()["Notifications"] then
+            SendNotification("Unloading...")
+        end
+        task.delay(0.5, O48_Cleanup)
+    end
+end))
+
+table.insert(O48_Connections, uis.InputBegan:Connect(function(k, t)
+    if t then return end
+    local pk = cfg_prefire() and cfg_prefire()["Keybind"]
+    if not pk or not pk["Enabled"] then return end
+    
+    if k.KeyCode == Enum.KeyCode[pk["Key"]:upper()] then
+        getgenv().O48["Prefire"]["Enabled"] = not getgenv().O48["Prefire"]["Enabled"]
+        local status = getgenv().O48["Prefire"]["Enabled"] and "Enabled" or "Disabled"
+        SendRobloxNotification("O48 Prefire", "Prefire " .. status, 2)
+    end
+end))
+
+table.insert(O48_Connections, uis.InputBegan:Connect(function(k, t)
+    if t then return end
+    local dp = cfg_prefire() and cfg_prefire()["DelayPresets"]
+    if not dp then return end
+    
+    if dp["Preset1"] and dp["Preset1"]["Enabled"] and k.KeyCode == dp["Preset1"]["Keybind"] then
+        local current = getgenv().O48["Prefire"]["DelayPresets"]["CurrentPreset"]
+        if current == 1 then
+            getgenv().O48["Prefire"]["DelayPresets"]["CurrentPreset"] = 0
+            local rd = cfg_prefire()["RandomDelay"]
+            if rd and rd["Enabled"] then
+                SendRobloxNotification("O48 Prefire", string.format("Random Delay: %.3fs - %.3fs", rd["Min"], rd["Max"]), 2)
+            else
+                SendRobloxNotification("O48 Prefire", string.format("Normal Delay: %.3fs", cfg_prefire()["Delay"]), 2)
+            end
+        else
+            getgenv().O48["Prefire"]["DelayPresets"]["CurrentPreset"] = 1
+            SendRobloxNotification("O48 Prefire", string.format("Preset 1: %.3fs delay", dp["Preset1"]["Delay"]), 2)
+        end
+    elseif dp["Preset2"] and dp["Preset2"]["Enabled"] and k.KeyCode == dp["Preset2"]["Keybind"] then
+        local current = getgenv().O48["Prefire"]["DelayPresets"]["CurrentPreset"]
+        if current == 2 then
+            getgenv().O48["Prefire"]["DelayPresets"]["CurrentPreset"] = 0
+            local rd = cfg_prefire()["RandomDelay"]
+            if rd and rd["Enabled"] then
+                SendRobloxNotification("O48 Prefire", string.format("Random Delay: %.3fs - %.3fs", rd["Min"], rd["Max"]), 2)
+            else
+                SendRobloxNotification("O48 Prefire", string.format("Normal Delay: %.3fs", cfg_prefire()["Delay"]), 2)
+            end
+        else
+            getgenv().O48["Prefire"]["DelayPresets"]["CurrentPreset"] = 2
+            SendRobloxNotification("O48 Prefire", string.format("Preset 2: %.3fs delay", dp["Preset2"]["Delay"]), 2)
+        end
+    end
+end))
+
+table.insert(O48_Connections, uis.InputBegan:Connect(function(input, t)
+    if t then return end
+    if not cfg_prefire() or not cfg_prefire()["TargetSpecific"] then return end
+    local ts = cfg_prefire()["TargetSpecific"]
+    if not ts["Enabled"] then return end
+    
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if ts["StayLocked"] then return end
+        
+        local char = lplr.Character
+        local has_tool = char and char:FindFirstChildOfClass("Tool")
+        if has_tool then return end
+        
+        local target = GetClosestPlayerToMouse()
+        if target then
+            getgenv().O48["Prefire"]["TargetSpecific"]["Player"] = target.Name
+            if ts["Notifications"] == true then
+                SendRobloxNotification("O48 Prefire", "Tracking " .. target.Name, 3)
+            end
+        end
+    end
+end))
+
+table.insert(O48_Connections, uis.InputBegan:Connect(function(k, t)
+    if t then return end
+    if not cfg_prefire() or not cfg_prefire()["TargetSpecific"] then return end
+    local ts = cfg_prefire()["TargetSpecific"]
+    if not ts["Enabled"] then return end
+    
+    if k.KeyCode == ts["StayLockedKey"] then
+        local current_player = ts["Player"]
+        
+        if ts["StayLocked"] then
+            getgenv().O48["Prefire"]["TargetSpecific"]["StayLocked"] = false
+            getgenv().O48["Prefire"]["TargetSpecific"]["Player"] = nil
+            SendRobloxNotification("O48 Prefire", "Unlocked from " .. (current_player or "target"), 3)
+        else
+            if not current_player then
+                SendRobloxNotification("O48 Prefire", "No target selected! Click on a player first.", 3)
+                return
+            end
+            getgenv().O48["Prefire"]["TargetSpecific"]["StayLocked"] = true
+            SendRobloxNotification("O48 Prefire", "Stay Locked: " .. current_player, 3)
+        end
+    end
+end))
+ 
+local GUI = Instance.new("ScreenGui")
+GUI.Name           = "O48_FOV"
+GUI.IgnoreGuiInset = true
+GUI.ResetOnSpawn   = false
+GUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+GUI.Parent         = game:GetService("CoreGui")
+O48_GUI            = GUI
+ 
+local SilentBoxFrame  = Instance.new("Frame", GUI)
+SilentBoxFrame.BackgroundTransparency = 1
+SilentBoxFrame.BorderSizePixel        = 0
+SilentBoxFrame.Visible                = false
+SilentBoxFrame.ZIndex                 = 10
+ 
+local SilentBoxStroke        = Instance.new("UIStroke", SilentBoxFrame)
+SilentBoxStroke.LineJoinMode = Enum.LineJoinMode.Miter
+ 
+local CamlockBoxFrame  = Instance.new("Frame", GUI)
+CamlockBoxFrame.BackgroundTransparency = 1
+CamlockBoxFrame.BorderSizePixel        = 0
+CamlockBoxFrame.Visible                = false
+CamlockBoxFrame.ZIndex                 = 10
+ 
+local CamlockBoxStroke        = Instance.new("UIStroke", CamlockBoxFrame)
+CamlockBoxStroke.LineJoinMode = Enum.LineJoinMode.Miter
+ 
+local CamlockFOV     = Drawing.new("Circle")
+CamlockFOV.Thickness = 1
+CamlockFOV.NumSides  = 64
+table.insert(O48_Drawings, CamlockFOV)
+ 
+local SilentFOV      = Drawing.new("Circle")
+SilentFOV.Thickness  = 1
+SilentFOV.NumSides   = 64
+table.insert(O48_Drawings, SilentFOV)
+ 
+local Line           = Drawing.new("Line")
+Line.Thickness       = 1
+Line.Visible         = false
+table.insert(O48_Drawings, Line)
+ 
+local function UpdateFOVVisual(fov_cfg, circle_draw, box_frame, box_stroke, target, distance)
+    local is_box     = fov_cfg["Type"] == "Box"
+    local show       = fov_cfg["ShowFOV"]
+    local hrp        = target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    local mv         = GetMouseVP()
+    local focused    = false
+ 
+    circle_draw.Visible = false
+    box_frame.Visible   = false
+ 
+    if not show then return focused end
+ 
+    if is_box then
+        if hrp then
+            local bounds = GetBoxFOVBounds(fov_cfg, hrp)
+            if bounds then
+                focused = IsMouseInBoxFOV(bounds)
+                box_frame.Position   = UDim2.fromOffset(bounds.X, bounds.Y)
+                box_frame.Size       = UDim2.fromOffset(bounds.W, bounds.H)
+                box_frame.Visible    = true
+                box_stroke.Thickness = fov_cfg["Thickness"] or 1
+                box_stroke.Color     = focused and fov_cfg["FocusColor"] or fov_cfg["Color"]
+            end
+        end
+    else
+        local radius = GetFOVRadius(fov_cfg, distance)
+        local pos_2d = mv
+        if hrp then
+            local sp, on = c:WorldToViewportPoint(hrp.Position)
+            if on then
+                pos_2d  = vect2(sp.X, sp.Y)
+                focused = (mv - pos_2d).Magnitude < radius
+            end
+        end
+        circle_draw.Visible      = true
+        circle_draw.Radius       = radius
+        circle_draw.Color        = focused and fov_cfg["FocusColor"] or fov_cfg["Color"]
+        circle_draw.Filled       = fov_cfg["Filled"]
+        circle_draw.Transparency = fov_cfg["Transparency"]
+        circle_draw.Thickness    = fov_cfg["Thickness"] or 1
+        circle_draw.Position     = hrp and pos_2d or mv
+    end
+ 
+    return focused
+end
+ 
+table.insert(O48_Connections, rs.RenderStepped:Connect(function()
+    -- Cache weapon state OUTSIDE namecall to avoid recursive calls
+    CachedHasWeapon = HasWeapon()
+    
+    local mv          = GetMouseVP()
+    local cfov        = cfg_cfov()
+    local sfov        = cfg_sfov()
+    local trace       = cfg_trace()
+    local cam         = cfg_cam()
+    local target_dist = CTarget and GetTargetDistance(CTarget) or 0
+    local silent_dist = SilentTarget and GetTargetDistance(SilentTarget) or 0
+ 
+    UpdateFOVVisual(sfov,  SilentFOV,  SilentBoxFrame,  SilentBoxStroke,  SilentTarget, silent_dist)
+    UpdateFOVVisual(cfov,  CamlockFOV, CamlockBoxFrame, CamlockBoxStroke, CTarget, target_dist)
+ 
+    Line.Color        = trace["Color"]
+    Line.Transparency = trace["Transparency"]
+ 
+    if cfg_key360()["Enabled"] and Toggle then
+        local ct = tick()
+        local dt = math.min(ct - LastRenderTime, 0.01)
+        LastRenderTime = ct
+        c.CFrame      = c.CFrame * CFrame.fromAxisAngle(vect3(0,1,0), math.rad(cfg_key360()["RotationSpeed"]*dt))
+        TotalRotation = TotalRotation + math.rad(cfg_key360()["RotationSpeed"]*dt)
+        if TotalRotation >= FullCircleRotation then Toggle=false; TotalRotation=0 end
+    end
+ 
+    UpdateCachedAim()
+ 
+    if getgenv().O48["Camlock"]["Enabled"] and cam["Enabled"] and CTarget and IsAlive(CTarget) and PassesChecks(CTarget) then
+        local dist     = GetTargetDistance(CTarget)
+        local ap, apos = GetCamlockPosition(CTarget.Character, dist)
+        
+        -- Check weapon requirement
+        local has_gun = HasWeapon()
+        local weapon_ok = not getgenv().O48["Camlock"]["WeaponCheck"] or has_gun
+        
+        -- Check first person requirement
+        local camMode = GetCameraMode()
+        local fp_ok = not getgenv().O48["Camlock"]["FirstPersonCheck"] or (camMode == "First Person")
+ 
+        if ap and apos and weapon_ok and fp_ok then
+            local tp = cam["Shake"] and apos + vect3(
+                math.random(-cam["ShakeValue"],cam["ShakeValue"]),
+                math.random(-cam["ShakeValue"],cam["ShakeValue"]),
+                math.random(-cam["ShakeValue"],cam["ShakeValue"])
+            )*0.1 or apos
+ 
+            local es = cam["EasingStyle"] or "Linear"
+ 
+            local function get_cam_sm()
+                local cm = cam["CameraMode"]
+                if cm and cm["Enabled"] then
+                    return GetDistanceSmoothness(cm["Smoothness_Distance"], dist) or cm["Smoothness"]
+                end
+                return GetDistanceSmoothness(cam["Smoothness_Distance"], dist) or cam["Smoothness"]
+            end
+ 
+            local function get_cam_es()
+                local cm = cam["CameraMode"]
+                if cm and cm["Enabled"] then return cm["EasingStyle"] or es end
+                return es
+            end
+ 
+            local function get_mouse_sm()
+                local mm = cam["MouseMode"]
+                if mm and mm["Enabled"] then
+                    return GetDistanceSmoothness(mm["Smoothness_Distance"], dist) or mm["Smoothness"]
+                end
+                return GetDistanceSmoothness(cam["Smoothness_Distance"], dist) or cam["MouseSmoothness"]
+            end
+ 
+            local function get_cam_pred()
+                local cm = cam["CameraMode"]
+                if cm and cm["Enabled"] and cm["Prediction"] then return cm["Prediction"] end
+                return cam["Prediction"]
+            end
+ 
+            local function get_mouse_pred()
+                local mm = cam["MouseMode"]
+                if mm and mm["Enabled"] and mm["Prediction"] then return mm["Prediction"] end
+                return cam["Prediction"]
+            end
+ 
+            if InCamlockFOV(CTarget, dist) then
+                local mode = cam["FollowMode"]["Enabled"] and cam["FollowMode"]["Mode"] or "Camera"
+ 
+                if mode == "Hybrid" then
+                    if camMode == "First Person" then
+                        local vel      = GetVelocity(CTarget.Character)
+                        local pred_cfg = get_cam_pred()
+                        local target_p = ApplyPrediction(apos, vel, pred_cfg, dist)
+                        if cam["SmoothLock"] then
+                            c.CFrame = EasedLerp(c.CFrame, cnew(c.CFrame.p, target_p), get_cam_sm(), get_cam_es())
+                        else
+                            c.CFrame = cnew(c.CFrame.p, target_p)
+                        end
+                    else
+                        local vel      = GetVelocity(CTarget.Character)
+                        local pred_cfg = get_mouse_pred()
+                        local target_p = ApplyPrediction(apos, vel, pred_cfg, dist)
+                        local sp, on_screen = c:WorldToViewportPoint(target_p)
+                        local viewport = c.ViewportSize
+                        if on_screen and sp.X >= 0 and sp.X <= viewport.X and sp.Y >= 0 and sp.Y <= viewport.Y then
+                            mousemoverel((sp.X - mv.X) * get_mouse_sm(), (sp.Y - mv.Y) * get_mouse_sm())
+                        end
+                    end
+                elseif mode == "Mouse" then
+                    local vel      = GetVelocity(CTarget.Character)
+                    local pred_cfg = get_mouse_pred()
+                    local target_p = ApplyPrediction(apos, vel, pred_cfg, dist)
+                    local sp, on_screen = c:WorldToViewportPoint(target_p)
+                    local viewport = c.ViewportSize
+                    if on_screen and sp.X >= 0 and sp.X <= viewport.X and sp.Y >= 0 and sp.Y <= viewport.Y then
+                        mousemoverel((sp.X - mv.X) * get_mouse_sm(), (sp.Y - mv.Y) * get_mouse_sm())
+                    end
+                else
+                    local vel      = GetVelocity(CTarget.Character)
+                    local pred_cfg = get_cam_pred()
+                    local target_p = ApplyPrediction(apos, vel, pred_cfg, dist)
+                    if cam["SmoothLock"] then
+                        c.CFrame = EasedLerp(c.CFrame, cnew(c.CFrame.p, target_p), get_cam_sm(), get_cam_es())
+                    else
+                        c.CFrame = cnew(c.CFrame.p, target_p)
+                    end
+                end
+            end
+ 
+            if trace["Enabled"] and CachedTracerPos then
+                local ts     = c:WorldToViewportPoint(CachedTracerPos)
+                Line.Visible = true
+                Line.From    = mv
+                Line.To      = vect2(ts.X, ts.Y)
+            else
+                Line.Visible = false
+            end
+        end
+    end
+    
+    -- Only auto-unlock if target actually dies, not if they just fail checks temporarily
+    if CToggle and CTarget and not IsAlive(CTarget) then
+        CToggle=false
+        CTarget=nil; CachedAimPart=nil; CachedAimPosition=nil; CachedTracerPos=nil
+        Line.Visible = false  -- Clear the tracer line immediately
+    end
+    
+    if not (getgenv().O48["Camlock"]["Enabled"] and cfg_cam()["Enabled"] and CToggle) then
+        Line.Visible = false
+    end
+end))
+ 
+if cfg_general()["Enabled"] and cfg_general()["Notifications"] then
+    SendNotification("Loaded!")
+end
